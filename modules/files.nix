@@ -300,6 +300,12 @@ in
             # Needed in case /nix is a symbolic link.
             realOut="$(realpath -m "$out")"
 
+            # An associative array of previously handled target paths. This is
+            # the path handled for the declared file in home.file. That is, if a
+            # file has been specified as recursive, then this array will only
+            # contain the recursion root, not the visited files.
+            declare -A seenTargets
+
             function insertFile() {
               local source="$1"
               local relTarget="$2"
@@ -307,14 +313,24 @@ in
               local recursive="$4"
               local ignorelinks="$5"
 
-              # If the target already exists then we have a collision. Note, this
+              # If the target has already been seen then we have a collision. Note, this
               # should not happen due to the assertion found in the 'files' module.
-              # We therefore simply log the conflict and otherwise ignore it, mainly
-              # to make the `files-target-config` test work as expected.
-              if [[ -e "$realOut/$relTarget" ]]; then
+              # We therefore simply log the conflict and otherwise ignore it,
+              # mainly to make the `files-target-conflict` test work as expected.
+              if [[ ''${seenTargets["$relTarget"]} ]]; then
                 echo "File conflict for file '$relTarget'" >&2
                 return
               fi
+
+              # If the path already exists as a non-directory, then we are
+              # overriding a file from a recursively linked directory. Remove
+              # this old file so that the override can be placed instead.
+              if [[ -e "$realOut/$relTarget" && ! -d "$realOut/$relTarget" ]]; then
+                rm "$realOut/$relTarget"
+              fi
+
+              # Record that we have seen this target file.
+              seenTargets["$relTarget"]=1
 
               # Figure out the real absolute path to the target.
               local target
