@@ -51,69 +51,6 @@ let
       inherit description example;
     };
 
-  fetchMarketplace =
-    name: mp:
-    if mp.source == "github" then
-      let
-        parts = lib.splitString "/" mp.repo;
-      in
-      pkgs.fetchFromGitHub {
-        owner = builtins.elemAt parts 0;
-        repo = builtins.elemAt parts 1;
-        rev = mp.rev;
-        hash = mp.hash;
-      }
-    else if mp.source == "git" then
-      pkgs.fetchgit {
-        url = mp.url;
-        rev = mp.rev;
-        hash = mp.hash;
-      }
-    else if mp.source == "directory" then
-      mp.path
-    else
-      throw "unsupported marketplace source: ${mp.source}";
-
-  extractPlugin =
-    marketplaceName: marketplaceSrc: pluginName:
-    pkgs.runCommand "claude-plugin-${marketplaceName}-${pluginName}"
-      {
-        nativeBuildInputs = [ pkgs.jq ];
-      }
-      ''
-        manifest="${marketplaceSrc}/.claude-plugin/marketplace.json"
-        if [ ! -f "$manifest" ]; then
-          echo "error: .claude-plugin/marketplace.json not found in marketplace '${marketplaceName}'" >&2
-          exit 1
-        fi
-
-        source=$(jq -r \
-          '.plugins[] | select(.name == "${pluginName}") | .source' \
-          "$manifest")
-
-        if [ -z "$source" ] || [ "$source" = "null" ]; then
-          echo "error: plugin '${pluginName}' not found in marketplace '${marketplaceName}'" >&2
-          exit 1
-        fi
-
-        plugin_dir="${marketplaceSrc}/$source"
-        if [ ! -d "$plugin_dir" ]; then
-          echo "error: plugin '${pluginName}' source path is not a directory in marketplace '${marketplaceName}'" >&2
-          exit 1
-        fi
-
-        cp -r "$plugin_dir" $out
-      '';
-
-  marketplacePluginPaths = lib.concatLists (
-    lib.mapAttrsToList (
-      mpName: mp:
-      let
-        src = fetchMarketplace mpName mp;
-      in
-      map (pName: extractPlugin mpName src pName) mp.plugins
-    ) cfg.marketplacePlugins
-  );
 in
 {
   meta.maintainers = [ lib.maintainers.khaneliman ];
@@ -201,99 +138,21 @@ in
     };
 
     plugins = lib.mkOption {
-      type = lib.types.listOf lib.types.path;
+      type = with lib.types; listOf (either package path);
       default = [ ];
       description = ''
-        Plugin directories to load into Claude Code via `--plugin-dir`.
-        Each entry should be a path to a directory containing a valid
-        Claude Code plugin.
+        Plugin directories or packages to load into Claude Code via
+        `--plugin-dir`. Each entry should be a path to a directory
+        containing a valid Claude Code plugin.
       '';
       example = lib.literalExpression "[ ./my-local-plugin ]";
     };
 
-    marketplacePlugins = lib.mkOption {
-      type = lib.types.attrsOf (
-        lib.types.submodule {
-          options = {
-            source = lib.mkOption {
-              type = lib.types.enum [
-                "github"
-                "git"
-                "directory"
-              ];
-              description = "Source type for the marketplace.";
-            };
-
-            repo = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = ''GitHub repository in "owner/repo" format. Required when source = "github".'';
-            };
-
-            url = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = ''Git repository URL. Required when source = "git".'';
-            };
-
-            path = lib.mkOption {
-              type = lib.types.nullOr lib.types.path;
-              default = null;
-              description = ''Path to a local marketplace directory. Required when source = "directory".'';
-            };
-
-            rev = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = "Git revision (commit, tag, or branch). Used with github and git sources.";
-            };
-
-            hash = lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = "SRI hash of the source for reproducible fetching. Required for github and git sources.";
-            };
-
-            plugins = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              description = "Plugin names to install from this marketplace.";
-            };
-          };
-        }
-      );
+    marketplaces = lib.mkOption {
+      type = with lib.types; attrsOf (either package path);
       default = { };
       description = ''
-        Install plugins from Claude Code marketplaces. The module fetches the
-        marketplace source, reads `.claude-plugin/marketplace.json`, extracts
-        selected plugins, and loads them via `--plugin-dir`.
-
-        Only plugins with relative-path sources within the marketplace repo
-        are supported.
-      '';
-      example = lib.literalExpression ''
-        {
-          company-tools = {
-            source = "github";
-            repo = "mycompany/claude-marketplace";
-            rev = "v2.0.0";
-            hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-            plugins = [ "code-reviewer" "deployment-tools" ];
-          };
-
-          internal-tools = {
-            source = "git";
-            url = "https://gitlab.example.com/team/claude-plugins.git";
-            rev = "abc1234";
-            hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
-            plugins = [ "lint-checker" ];
-          };
-
-          local-plugins = {
-            source = "directory";
-            path = ./my-marketplace;
-            plugins = [ "custom-linter" ];
-          };
-        }
+        List of sources for marketplaces.
       '';
     };
 
@@ -637,6 +496,22 @@ in
           }
         else
           nameValuePair ".claude/skills/${name}/SKILL.md" (mkSourceEntry content);
+
+      mkMarketplaceEntry = name: content: {
+        source = {
+          source = "directory";
+          path = content;
+        };
+      };
+
+      mkInstalledMarketplaceEntry =
+        name: content:
+        (mkMarketplaceEntry name content)
+        // {
+          installLocation = content;
+          lastUpdated = "1970-01-01T00:00:00Z";
+        };
+
     in
     lib.mkIf cfg.enable {
       assertions =
@@ -657,34 +532,16 @@ in
         [
           {
             assertion =
-              (
-                cfg.mcpServers == { }
-                && cfg.lspServers == { }
-                && !cfg.enableMcpIntegration
-                && cfg.plugins == [ ]
-                && cfg.marketplacePlugins == [ ]
-              )
+              (cfg.mcpServers == { } && cfg.lspServers == { } && !cfg.enableMcpIntegration && cfg.plugins == [ ])
               || cfg.package != null;
-            message = "`programs.claude-code.package` cannot be null when `mcpServers`, `lspServers`, `enableMcpIntegration`, `plugins`, or `marketplacePlugins` is configured";
+            message = "`programs.claude-code.package` cannot be null when `mcpServers`, `lspServers`, `enableMcpIntegration`, or `plugins` is configured";
           }
           {
             assertion = !(cfg.memory.text != null && cfg.memory.source != null);
             message = "Cannot specify both `programs.claude-code.memory.text` and `programs.claude-code.memory.source`";
           }
         ]
-        ++ map mkExclusiveAssertion exclusiveInlineDirNames
-        ++ lib.mapAttrsToList (name: mp: {
-          assertion = mp.source == "github" -> (mp.repo != null && mp.hash != null);
-          message = "marketplacePlugins.${name}: `repo` and `hash` are required when source = \"github\"";
-        }) cfg.marketplacePlugins
-        ++ lib.mapAttrsToList (name: mp: {
-          assertion = mp.source == "git" -> (mp.url != null && mp.hash != null);
-          message = "marketplacePlugins.${name}: `url` and `hash` are required when source = \"git\"";
-        }) cfg.marketplacePlugins
-        ++ lib.mapAttrsToList (name: mp: {
-          assertion = mp.source == "directory" -> mp.path != null;
-          message = "marketplacePlugins.${name}: `path` is required when source = \"directory\"";
-        }) cfg.marketplacePlugins;
+        ++ map mkExclusiveAssertion exclusiveInlineDirNames;
 
       programs.claude-code.finalPackage =
         let
@@ -710,8 +567,7 @@ in
               map (pluginFile: "install -Dm644 ${pluginFile.path} $out/${pluginFile.name}") pluginFiles
             )
           );
-          allPluginPaths =
-            (if pluginFiles != [ ] then [ pluginDir ] else [ ]) ++ cfg.plugins ++ marketplacePluginPaths;
+          allPluginPaths = (if pluginFiles != [ ] then [ pluginDir ] else [ ]) ++ cfg.plugins;
           wrapperArgs = lib.flatten (
             map (p: [
               "--plugin-dir"
@@ -740,11 +596,14 @@ in
         packages = lib.mkIf (cfg.package != null) [ cfg.finalPackage ];
 
         file = lib.mkMerge [
-          (lib.mkIf (cfg.settings != { }) {
+          (lib.mkIf (cfg.settings != { } || cfg.marketplaces != { }) {
             ".claude/settings.json".source = jsonFormat.generate "claude-code-settings.json" (
               cfg.settings
               // {
                 "$schema" = "https://json.schemastore.org/claude-code-settings.json";
+              }
+              // optionalAttrs (cfg.marketplaces != { }) {
+                extraKnownMarketplaces = lib.mapAttrs mkMarketplaceEntry cfg.marketplaces;
               }
             );
           })
@@ -753,6 +612,12 @@ in
           })
           (lib.mkIf (cfg.memory.source != null) {
             ".claude/CLAUDE.md".source = cfg.memory.source;
+          })
+          (lib.mkIf (cfg.marketplaces != { }) {
+            ".claude/plugins/known_marketplaces.json".source =
+              jsonFormat.generate "claude-code-known-marketplaces.json" (
+                lib.mapAttrs mkInstalledMarketplaceEntry cfg.marketplaces
+              );
           })
           (mkMarkdownEntries "agents" cfg.agents)
           (mkMarkdownEntries "commands" cfg.commands)
