@@ -310,7 +310,7 @@ in
         let
           manifestPath = plugin + "/.codex-plugin/plugin.json";
           manifestName =
-            if !lib.isDerivation plugin && builtins.pathExists manifestPath then
+            if builtins.pathExists manifestPath then
               (builtins.fromJSON (builtins.readFile manifestPath)).name
             else
               null;
@@ -326,7 +326,7 @@ in
         let
           manifestPath = plugin + "/.codex-plugin/plugin.json";
           manifestVersion =
-            if !lib.isDerivation plugin && builtins.pathExists manifestPath then
+            if builtins.pathExists manifestPath then
               (builtins.fromJSON (builtins.readFile manifestPath)).version or null
             else
               null;
