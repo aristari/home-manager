@@ -37,6 +37,13 @@ in
 
     package = lib.mkPackageOption pkgs "codex" { nullable = true; };
 
+    finalPackage = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      internal = true;
+      description = "Resulting customized codex package.";
+    };
+
     enableMcpIntegration = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -48,6 +55,16 @@ in
         Note: Settings defined in {option}`programs.mcp.servers` are merged
         with {option}`programs.codex.settings.mcp_servers`, with settings-based
         values taking precedence.
+      '';
+    };
+
+    enableSettingsAsProfile = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether to store settings as a profile that is always activated.
+
+        Note: Requires Codex 0.134.0+
       '';
     };
 
@@ -266,7 +283,16 @@ in
       useXdgDirectories = config.home.preferXdgDirectories && isTomlConfig;
       xdgConfigHome = lib.removePrefix config.home.homeDirectory config.xdg.configHome;
       configDir = if useXdgDirectories then "${xdgConfigHome}/codex" else ".codex";
-      configFileName = if isTomlConfig then "config.toml" else "config.yaml";
+      configFileBasename =
+        if cfg.enableSettingsAsProfile then
+          "home-manager.config"
+        else
+          "config";
+      configFileName =
+        if isTomlConfig then
+          "${configFileBasename}.toml"
+        else
+          "${configFileBasename}.yaml";
       skillsDir = "${configDir}/skills";
       homeRelativeConfigDir = lib.removePrefix "/" configDir;
       pluginsMarketplaceName = "home-manager";
@@ -443,6 +469,10 @@ in
           message = "`programs.codex.plugins` and `programs.codex.marketplaces` require Codex 0.2.0 or later";
         }
         {
+          assertion = !cfg.enableSettingsAsProfile || migrateLegacyProfiles;
+          message = "`programs.codex.enableSettingsAsProfile` requires Codex 0.134.0 or later";
+        }
+        {
           assertion = lib.all (
             plugin:
             !(lib.hm.strings.isPathLike plugin && !lib.isDerivation plugin) || lib.pathIsDirectory plugin
@@ -469,8 +499,31 @@ in
         }
       ];
 
+      programs.codex.finalPackage =
+        let
+          wrapperArgs = [
+            "--profile"
+            "home-manager"
+          ];
+        in
+        if cfg.enableSettingsAsProfile then
+          pkgs.symlinkJoin {
+            name = "codex";
+            paths = [ cfg.package ];
+            postBuild = ''
+              mv $out/bin/codex $out/bin/.codex-wrapped
+              cat > $out/bin/codex <<EOF
+              #! ${pkgs.bash}/bin/bash -e
+              exec -a "\$0" "$out/bin/.codex-wrapped" ${lib.escapeShellArgs wrapperArgs} "\$@"
+              EOF
+              chmod +x $out/bin/codex
+            '';
+          }
+        else
+          cfg.package;
+
       home = {
-        packages = mkIf (cfg.package != null) [ cfg.package ];
+        packages = mkIf (cfg.package != null) [ cfg.finalPackage ];
 
         # This is needed because codex will convert the symlinked plugin directory into
         # an actual directory (which will not be overwritten by home-manager)

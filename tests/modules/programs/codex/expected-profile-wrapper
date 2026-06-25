@@ -1,0 +1,2 @@
+#! @bash-interactive@/bin/bash -e
+exec -a "$0" "/nix/store/00000000000000000000000000000000-codex/bin/.codex-wrapped" --profile home-manager "$@"

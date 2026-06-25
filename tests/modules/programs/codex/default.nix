@@ -1,6 +1,7 @@
 {
   codex-settings-toml = ./settings-toml.nix;
   codex-settings-toml-prefer-xdg-directories = ./settings-toml-prefer-xdg-directories.nix;
+  codex-settings-as-profile = ./settings-as-profile.nix;
   codex-settings-yaml = ./settings-yaml.nix;
   codex-empty-settings = ./empty-settings.nix;
   codex-legacy-custom-instructions = ./legacy-custom-instructions.nix;
